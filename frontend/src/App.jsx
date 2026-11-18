@@ -8,8 +8,7 @@ const INSTANCE_NAME = import.meta.env.VITE_INSTANCE_NAME || 'Local Peer';
 
 /**
  * Aplica a diferença mínima (diff por prefixo/sufixo comum) em uma instância Y.Text.
- * Isso garante operações CRDT reais caractere por caractere (ytext.insert / ytext.delete)
- * em vez de sobrescrever a string inteira, preservando edições concorrentes offline.
+ * Garante operações CRDT caractere por caractere (ytext.insert / ytext.delete).
  */
 function applyYTextDiff(ydoc, ytext, nextValue) {
   if (!ytext) return;
@@ -50,10 +49,6 @@ function applyYTextDiff(ydoc, ytext, nextValue) {
   });
 }
 
-/**
- * Factory helpers para criar nós CRDT (Y.Map, Y.Array, Y.Text)
- * antes de inseri-los na árvore do documento Yjs.
- */
 function createAlternativeYMap(textoInicial = '', isCorrect = false) {
   const altMap = new Y.Map();
   const textoYText = new Y.Text();
@@ -67,7 +62,7 @@ function createAlternativeYMap(textoInicial = '', isCorrect = false) {
 }
 
 function createQuestionYMap(
-  enunciadoInicial = 'Nova questão colaborativa...',
+  enunciadoInicial = 'Nova questão...',
   alternativasIniciais = [
     { texto: 'Alternativa A', isCorrect: true },
     { texto: 'Alternativa B', isCorrect: false },
@@ -94,7 +89,7 @@ function createQuestionYMap(
 }
 
 function createQuizYMap(
-  tituloInicial = 'Quiz de Sistemas Distribuídos & CRDTs',
+  tituloInicial = 'Quiz de Sistemas Distribuídos',
   withStarterQuestion = true
 ) {
   const quizMap = new Y.Map();
@@ -107,10 +102,10 @@ function createQuizYMap(
   if (withStarterQuestion) {
     questionsYArray.insert(0, [
       createQuestionYMap(
-        'Qual propriedade garante que duas réplicas CRDT com o mesmo conjunto de atualizações atinjam exatamente o mesmo estado sem coordenação central?',
+        'Qual propriedade garante que duas réplicas com o mesmo conjunto de atualizações atinjam exatamente o mesmo estado sem coordenação central?',
         [
           {
-            texto: 'Convergência Forte Eventual (Strong Eventual Consistency - SEC)',
+            texto: 'Convergência Forte Eventual (Strong Eventual Consistency)',
             isCorrect: true,
           },
           {
@@ -132,9 +127,6 @@ function createQuizYMap(
   return quizMap;
 }
 
-/**
- * Input reativo vinculado diretamente a um Y.Text para edição caractere por caractere.
- */
 function CollaborativeTextField({
   ydoc,
   ytext,
@@ -198,7 +190,6 @@ export default function App() {
   const providerRef = useRef(null);
   const appStateRef = useRef(null);
 
-  // Começa conectado conforme requisito
   const [isConnected, setIsConnected] = useState(true);
   const [wsStatus, setWsStatus] = useState('connected');
   const [selectedQuizIndex, setSelectedQuizIndex] = useState(0);
@@ -226,9 +217,6 @@ export default function App() {
 
     const handleSync = (isSynced) => {
       if (!isSynced) return;
-      // Inicializa a estrutura padrão caso ainda não exista no cluster após sincronizar.
-      // Para evitar condição de corrida quando Alice e Bob sobem juntos no docker-compose,
-      // Alice cria imediatamente no sync e qualquer outra instância aguarda um pequeno backoff.
       const initIfEmpty = () => {
         if (!appState.has('quizzes')) {
           ydoc.transact(() => {
@@ -266,7 +254,6 @@ export default function App() {
     };
   }, [forceUpdate]);
 
-  // Garante que app-state possua o Y.Array 'quizzes' caso o usuário interaja antes de qualquer sync
   const ensureQuizzesArray = () => {
     const ydoc = ydocRef.current;
     const appState = appStateRef.current;
@@ -285,7 +272,6 @@ export default function App() {
     return quizzes;
   };
 
-  // Alterna conexão do WebSocket Provider (Desconectar / Conectar)
   const handleToggleConnection = () => {
     const provider = providerRef.current;
     if (!provider) return;
@@ -300,7 +286,6 @@ export default function App() {
     }
   };
 
-  // Operações de mutação no CRDT
   const handleAddQuiz = () => {
     const ydoc = ydocRef.current;
     const quizzes = ensureQuizzesArray();
@@ -406,70 +391,64 @@ export default function App() {
 
   const isAlice = INSTANCE_NAME.toLowerCase() === 'alice';
   const isBob = INSTANCE_NAME.toLowerCase() === 'bob';
+  const avatarLetter = INSTANCE_NAME.slice(0, 1).toUpperCase();
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* Top Navbar com Controle de Rede CRDT */}
-      <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-900/90 backdrop-blur">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
+      {/* Header */}
+      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <div
-              className={`h-10 w-10 rounded-xl flex items-center justify-center font-bold text-sm border ${
+              className={`h-9 w-9 rounded-full flex items-center justify-center font-bold text-sm border ${
                 isAlice
-                  ? 'bg-sky-500/15 border-sky-500/40 text-sky-300'
+                  ? 'bg-sky-100 border-sky-300 text-sky-700'
                   : isBob
-                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
-                  : 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                  ? 'bg-amber-100 border-amber-300 text-amber-700'
+                  : 'bg-emerald-100 border-emerald-300 text-emerald-700'
               }`}
             >
-              {INSTANCE_NAME.slice(0, 2).toUpperCase()}
+              {avatarLetter}
             </div>
-            <div>
-              <div className="flex items-center gap-2.5">
-                <h1 className="text-lg font-bold tracking-tight text-white">
-                  CRDT Sandbox
-                </h1>
-                <span
-                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-md border ${
-                    isAlice
-                      ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
-                      : isBob
-                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                      : 'bg-slate-800 border-slate-700 text-slate-300'
-                  }`}
-                >
-                  Réplica: {INSTANCE_NAME}
-                </span>
-              </div>
-              <p className="text-xs text-slate-400">
-                Y.Map(&quot;app-state&quot;) → quizzes → questions (Y.Text + Y.Array)
-              </p>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-lg font-bold tracking-tight text-slate-900">
+                CRDT Sandbox
+              </h1>
+              <span
+                className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
+                  isAlice
+                    ? 'bg-sky-50 border-sky-200 text-sky-700'
+                    : isBob
+                    ? 'bg-amber-50 border-amber-200 text-amber-700'
+                    : 'bg-slate-100 border-slate-200 text-slate-700'
+                }`}
+              >
+                {INSTANCE_NAME}
+              </span>
             </div>
           </div>
 
-          {/* Indicador de Conexão + Botão Conectar/Desconectar */}
+          {/* Indicador de Conexão + Botão Desconectar/Conectar */}
           <div className="flex items-center gap-3">
             <div
               id="connection-status-indicator"
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
                 isConnected
-                  ? 'bg-emerald-950/60 border-emerald-700/60 text-emerald-300'
-                  : 'bg-rose-950/60 border-rose-700/60 text-rose-300'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  : 'bg-rose-50 border-rose-200 text-rose-700'
               }`}
             >
               <span
-                className={`h-2.5 w-2.5 rounded-full ${
-                  isConnected
-                    ? 'bg-emerald-400 animate-pulse'
-                    : 'bg-rose-500'
+                className={`h-2 w-2 rounded-full ${
+                  isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
                 }`}
               />
               <span>
                 {isConnected
                   ? wsStatus === 'connected'
-                    ? 'Conectado (Sincronizando em Tempo Real)'
-                    : 'Conectado (Reconectando ao Relay...)'
-                  : 'Desconectado (Edição Local-First Offline)'}
+                    ? 'Conectado'
+                    : 'Reconectando...'
+                  : 'Desconectado'}
               </span>
             </div>
 
@@ -477,10 +456,10 @@ export default function App() {
               id="toggle-connection-btn"
               type="button"
               onClick={handleToggleConnection}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all shadow-sm cursor-pointer ${
+              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors shadow-sm cursor-pointer ${
                 isConnected
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
-                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white'
               }`}
             >
               {isConnected ? 'Desconectar' : 'Conectar'}
@@ -489,56 +468,42 @@ export default function App() {
         </div>
       </header>
 
-      {/* Banner de aviso quando em modo Offline */}
+      {/* Aviso discreto quando offline */}
       {!isConnected && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2.5 text-center text-xs text-amber-200">
-          <strong>Modo Offline Ativo:</strong> Você chamou{' '}
-          <code className="bg-amber-950/80 px-1.5 py-0.5 rounded text-amber-300">
-            provider.disconnect()
-          </code>
-          . Todas as edições em enunciados e alternativas continuam funcionando no{' '}
-          <code className="bg-amber-950/80 px-1.5 py-0.5 rounded text-amber-300">
-            Y.Doc
-          </code>{' '}
-          em memória local e serão mescladas automaticamente sem conflitos ao clicar em{' '}
-          <strong>Conectar</strong>.
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-center text-xs font-medium text-amber-800">
+          Modo offline — suas edições locais serão sincronizadas ao reconectar.
         </div>
       )}
 
       {/* Conteúdo Principal */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Seletor de Quizzes dentro de app-state */}
-        <section className="bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Lista de Quizzes em <code className="text-emerald-400">app-state</code>
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Selecione um quiz ou crie um novo para testar concorrência entre Alice e Bob.
-              </p>
-            </div>
+      <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Lista de Quizzes */}
+        <section className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3.5">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Quizzes
+            </h2>
             <button
               id="add-quiz-btn"
               type="button"
               onClick={handleAddQuiz}
-              className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 text-xs font-medium transition-colors cursor-pointer"
+              className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-medium transition-colors cursor-pointer"
             >
               + Novo Quiz
             </button>
           </div>
 
           {quizzesList.length === 0 ? (
-            <div className="text-center py-6 border border-dashed border-slate-800 rounded-lg">
-              <p className="text-sm text-slate-400 mb-3">
-                Nenhum quiz inicializado no CRDT ainda.
+            <div className="text-center py-6 border border-dashed border-slate-200 rounded-lg">
+              <p className="text-sm text-slate-500 mb-3">
+                Nenhum quiz criado ainda.
               </p>
               <button
                 type="button"
                 onClick={handleAddQuiz}
-                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors cursor-pointer"
               >
-                Inicializar Primeiro Quiz
+                Criar Primeiro Quiz
               </button>
             </div>
           ) : (
@@ -555,10 +520,10 @@ export default function App() {
                 return (
                   <div
                     key={quizId}
-                    className={`group flex items-center rounded-lg border text-xs font-medium transition-all ${
+                    className={`flex items-center rounded-lg border text-xs font-medium transition-all ${
                       isSelected
-                        ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-200'
-                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
                     }`}
                   >
                     <button
@@ -566,14 +531,14 @@ export default function App() {
                       onClick={() => setSelectedQuizIndex(idx)}
                       className="px-3.5 py-2 text-left cursor-pointer"
                     >
-                      {titleText.trim() || `Quiz Sem Título #${idx + 1}`}
+                      {titleText.trim() || `Quiz #${idx + 1}`}
                     </button>
                     {quizzesList.length > 1 && (
                       <button
                         type="button"
                         onClick={() => handleRemoveQuiz(idx)}
                         title="Remover Quiz"
-                        className="pr-2.5 pl-1 py-2 text-slate-500 hover:text-rose-400 transition-colors cursor-pointer"
+                        className="pr-2.5 pl-1 py-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                       >
                         ×
                       </button>
@@ -585,16 +550,15 @@ export default function App() {
           )}
         </section>
 
-        {/* Editor do Quiz Ativo e suas Questões */}
+        {/* Quiz Ativo */}
         {activeQuiz && (
           <section className="space-y-6">
-            {/* Cabeçalho do Quiz Ativo */}
-            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-5">
+            <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm">
               <label
                 htmlFor="quiz-title-input"
-                className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2"
+                className="block text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2"
               >
-                Título do Quiz (Y.Text Colaborativo)
+                Título do Quiz
               </label>
               {activeQuiz.get('title') instanceof Y.Text ? (
                 <CollaborativeTextField
@@ -602,7 +566,7 @@ export default function App() {
                   ydoc={ydocRef.current}
                   ytext={activeQuiz.get('title')}
                   placeholder="Digite o título do quiz..."
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-emerald-500/70 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-white placeholder-slate-600 transition-colors"
+                  className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-slate-900 placeholder-slate-400 transition-colors"
                 />
               ) : (
                 <input
@@ -614,36 +578,36 @@ export default function App() {
                       activeQuiz.set('title', e.target.value);
                     })
                   }
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-emerald-500/70 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-white"
+                  className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-slate-900"
                 />
               )}
             </div>
 
-            {/* Lista de Questões (Y.Array de Y.Map) */}
+            {/* Questões */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-300">
-                  Questões do Quiz ({questionsList.length})
+                <h3 className="text-sm font-semibold text-slate-700">
+                  Questões ({questionsList.length})
                 </h3>
                 <button
                   id="add-question-btn"
                   type="button"
                   onClick={() => handleAddQuestion(activeQuiz)}
-                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors shadow-sm cursor-pointer"
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors shadow-sm cursor-pointer"
                 >
                   + Adicionar Questão
                 </button>
               </div>
 
               {questionsList.length === 0 ? (
-                <div className="bg-slate-900/50 border border-dashed border-slate-800 rounded-xl p-8 text-center">
-                  <p className="text-sm text-slate-400 mb-3">
-                    Este quiz ainda não possui questões.
+                <div className="bg-white border border-dashed border-slate-300 rounded-xl p-8 text-center">
+                  <p className="text-sm text-slate-500 mb-3">
+                    Nenhuma questão adicionada.
                   </p>
                   <button
                     type="button"
                     onClick={() => handleAddQuestion(activeQuiz)}
-                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-colors cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors cursor-pointer"
                   >
                     Criar Primeira Questão
                   </button>
@@ -660,49 +624,43 @@ export default function App() {
                   return (
                     <article
                       key={questionId}
-                      className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4 shadow-sm"
+                      className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm"
                     >
-                      {/* Topo da Questão */}
                       <div className="flex items-start justify-between gap-4">
-                        <div className="flex-1 space-y-1.5">
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center justify-center px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-xs font-semibold">
-                              Questão #{qIdx + 1}
-                            </span>
-                            <span className="text-xs text-slate-500 font-mono">
-                              enunciado: Y.Text
-                            </span>
-                          </div>
+                        <div className="flex-1 space-y-2">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-md bg-slate-100 text-slate-700 text-xs font-semibold">
+                            Questão #{qIdx + 1}
+                          </span>
                           <CollaborativeTextField
                             id={`question-enunciado-${qIdx}`}
                             ydoc={ydocRef.current}
                             ytext={enunciadoYText}
                             multiline
-                            placeholder="Digite o enunciado da questão (edição colaborativa caractere a caractere)..."
-                            className="w-full rounded-lg bg-slate-950 border border-slate-800 focus:border-emerald-500/70 focus:outline-none px-3.5 py-2.5 text-sm text-slate-100 placeholder-slate-600 transition-colors resize-y"
+                            placeholder="Digite o enunciado da questão..."
+                            className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 transition-colors resize-y"
                           />
                         </div>
 
                         <button
                           type="button"
                           onClick={() => handleRemoveQuestion(activeQuiz, qIdx)}
-                          className="text-xs text-slate-500 hover:text-rose-400 px-2.5 py-1.5 rounded-lg hover:bg-rose-950/30 transition-colors cursor-pointer"
+                          className="text-xs text-slate-400 hover:text-rose-600 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
                           title="Excluir questão"
                         >
                           Remover
                         </button>
                       </div>
 
-                      {/* Lista de Alternativas (Y.Array de Y.Map) */}
-                      <div className="space-y-2.5 pt-2 border-t border-slate-800/80">
+                      {/* Alternativas */}
+                      <div className="space-y-2.5 pt-3 border-t border-slate-100">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-medium text-slate-400">
-                            Alternativas (<code className="text-slate-300">Y.Array&lt;Y.Map&gt;</code>) — marque as corretas (<code className="text-emerald-400">isCorrect</code>)
+                          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                            Alternativas
                           </span>
                           <button
                             type="button"
                             onClick={() => handleAddAlternative(questionMap)}
-                            className="text-xs font-medium text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                            className="text-xs font-medium text-emerald-600 hover:text-emerald-700 transition-colors cursor-pointer"
                           >
                             + Adicionar Alternativa
                           </button>
@@ -719,18 +677,17 @@ export default function App() {
                                 key={altId}
                                 className={`flex items-center gap-3 p-2.5 rounded-lg border transition-colors ${
                                   isCorrect
-                                    ? 'bg-emerald-950/25 border-emerald-600/40'
-                                    : 'bg-slate-950/70 border-slate-800'
+                                    ? 'bg-emerald-50/70 border-emerald-300'
+                                    : 'bg-slate-50 border-slate-200'
                                 }`}
                               >
-                                {/* Checkbox estilizado vinculado ao booleano isCorrect via .set() */}
                                 <label
                                   htmlFor={`alt-check-${qIdx}-${altIdx}`}
                                   className="relative flex items-center cursor-pointer select-none"
                                   title={
                                     isCorrect
-                                      ? 'Alternativa marcada como correta'
-                                      : 'Marcar como alternativa correta'
+                                      ? 'Alternativa correta'
+                                      : 'Marcar como correta'
                                   }
                                 >
                                   <input
@@ -745,8 +702,8 @@ export default function App() {
                                   <div
                                     className={`h-5 w-5 rounded-md border flex items-center justify-center transition-all ${
                                       isCorrect
-                                        ? 'bg-emerald-500 border-emerald-400 text-slate-950 shadow-sm'
-                                        : 'bg-slate-900 border-slate-700 hover:border-slate-500 text-transparent'
+                                        ? 'bg-emerald-600 border-emerald-600 text-white shadow-sm'
+                                        : 'bg-white border-slate-300 hover:border-slate-400 text-transparent'
                                     }`}
                                   >
                                     <svg
@@ -764,22 +721,21 @@ export default function App() {
                                   </div>
                                 </label>
 
-                                {/* Texto da alternativa como Y.Text */}
                                 <div className="flex-1">
                                   <CollaborativeTextField
                                     id={`alt-text-${qIdx}-${altIdx}`}
                                     ydoc={ydocRef.current}
                                     ytext={textoYText}
-                                    placeholder={`Texto da alternativa ${altIdx + 1}...`}
-                                    className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-600 focus:outline-none"
+                                    placeholder={`Alternativa ${altIdx + 1}...`}
+                                    className="w-full bg-transparent text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
                                   />
                                 </div>
 
                                 <span
-                                  className={`text-[11px] font-medium px-2 py-0.5 rounded ${
+                                  className={`text-[11px] font-medium px-2 py-0.5 rounded-full ${
                                     isCorrect
-                                      ? 'bg-emerald-500/20 text-emerald-300'
-                                      : 'bg-slate-900 text-slate-500'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-slate-200/70 text-slate-600'
                                   }`}
                                 >
                                   {isCorrect ? 'Correta' : 'Incorreta'}
@@ -791,7 +747,7 @@ export default function App() {
                                     onClick={() =>
                                       handleRemoveAlternative(questionMap, altIdx)
                                     }
-                                    className="text-slate-500 hover:text-rose-400 px-1.5 py-1 rounded transition-colors cursor-pointer"
+                                    className="text-slate-400 hover:text-rose-600 px-1.5 py-1 rounded transition-colors cursor-pointer"
                                     title="Remover alternativa"
                                   >
                                     ×
