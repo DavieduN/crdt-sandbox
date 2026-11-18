@@ -1,0 +1,17 @@
+{
+  "name": "crdt-sandbox-backend",
+  "version": "1.0.0",
+  "description": "Servidor de sinalização/relay WebSocket em memória para o CRDT Sandbox (Yjs)",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "y-websocket": "^1.5.4",
+    "yjs": "^13.6.18"
+  }
+}
