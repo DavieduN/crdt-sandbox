@@ -85,6 +85,7 @@ function createQuestionYMap(
   questionMap.set('id', crypto.randomUUID());
   questionMap.set('enunciado', enunciadoYText);
   questionMap.set('alternativas', alternativasYArray);
+  questionMap.set('deleted', false);
   return questionMap;
 }
 
@@ -124,6 +125,7 @@ function createQuizYMap(
   quizMap.set('id', crypto.randomUUID());
   quizMap.set('title', titleYText);
   quizMap.set('questions', questionsYArray);
+  quizMap.set('deleted', false);
   return quizMap;
 }
 
@@ -133,9 +135,12 @@ function createQuizYMap(
  * - Questão -> enunciado
  * - Alternativa -> texto
  *
- * Dessa forma, se Alice e Bob criarem/editarem offline o mesmo "Quiz 1"
- * adicionando perguntas diferentes (Y e Z), ao reconectar tudo é mesclado
- * em um único "Quiz 1" com todas as perguntas (X, Y e Z) sem perda por LWW.
+ * Também implementa semântica Add-Wins (Observed-Remove) entre exclusão de
+ * pai e adição concorrente de filho:
+ * - Se Alice remover o Quiz "X" (apagando suas questões conhecidas e marcando deleted=true)
+ *   enquanto Bob adiciona concorrentemente a Questão "Y" ao Quiz "X", ao reconectar
+ *   o Quiz "X" permanece vivo contendo apenas a Questão "Y".
+ * - O mesmo vale para exclusão de Questão vs adição concorrente de Alternativa.
  */
 function buildMergedQuizzesView(quizzesYArray) {
   if (!quizzesYArray) return [];
@@ -160,11 +165,18 @@ function buildMergedQuizzesView(quizzesYArray) {
         canonicalQuiz: quizMap,
         quizMaps: [],
         titleYTexts: [],
+        hasActiveQuizInstance: false,
         questionGroupsMap: new Map(),
       });
     }
 
     const qGroup = quizGroupsMap.get(quizKey);
+    const isQuizDeleted = Boolean(quizMap.get('deleted'));
+    if (!isQuizDeleted) {
+      qGroup.hasActiveQuizInstance = true;
+      qGroup.canonicalQuiz = quizMap;
+    }
+
     qGroup.quizMaps.push({ quizMap, index: rawQuizIdx });
     if (titleAttr instanceof Y.Text) {
       qGroup.titleYTexts.push(titleAttr);
@@ -188,11 +200,18 @@ function buildMergedQuizzesView(quizzesYArray) {
           canonicalQuestion: questionMap,
           questionRefs: [],
           enunciadoYTexts: [],
+          hasActiveQuestionInstance: false,
           altGroupsMap: new Map(),
         });
       }
 
       const questGroup = qGroup.questionGroupsMap.get(questionKey);
+      const isQuestionDeleted = Boolean(questionMap.get('deleted'));
+      if (!isQuestionDeleted) {
+        questGroup.hasActiveQuestionInstance = true;
+        questGroup.canonicalQuestion = questionMap;
+      }
+
       questGroup.questionRefs.push({
         parentQuestionsYArray: questionsYArray,
         questionMap,
@@ -239,15 +258,34 @@ function buildMergedQuizzesView(quizzesYArray) {
     });
   });
 
-  return Array.from(quizGroupsMap.values()).map((qGroup) => ({
-    ...qGroup,
-    questions: Array.from(qGroup.questionGroupsMap.values()).map(
-      (questGroup) => ({
-        ...questGroup,
-        alternativas: Array.from(questGroup.altGroupsMap.values()),
-      })
-    ),
-  }));
+  return Array.from(quizGroupsMap.values())
+    .map((qGroup) => {
+      const visibleQuestions = Array.from(qGroup.questionGroupsMap.values())
+        .map((questGroup) => {
+          const alternativas = Array.from(questGroup.altGroupsMap.values());
+          return {
+            ...questGroup,
+            parentQuizGroup: qGroup,
+            alternativas,
+          };
+        })
+        // Questão permanece visível se não foi deletada OU se recebeu alternativa concorrente
+        .filter(
+          (questGroup) =>
+            questGroup.hasActiveQuestionInstance ||
+            questGroup.alternativas.length > 0
+        );
+
+      return {
+        ...qGroup,
+        questions: visibleQuestions,
+      };
+    })
+    // Quiz permanece visível se não foi deletado OU se recebeu questão concorrente
+    .filter(
+      (qGroup) =>
+        qGroup.hasActiveQuizInstance || qGroup.questions.length > 0
+    );
 }
 
 function CollaborativeTextField({
@@ -433,23 +471,27 @@ export default function App() {
     setSelectedQuizIndex(mergedCount);
   };
 
+  /**
+   * Soft-delete com semântica Observed-Remove / Add-Wins:
+   * Remove todas as questões atualmente observadas neste quiz e marca deleted=true
+   * em suas instâncias de Y.Map, preservando o container para que questões
+   * adicionadas concorrentemente por outra réplica sobrevivam após o merge.
+   */
   const handleRemoveQuizGroup = (quizGroup, totalMergedQuizzes) => {
     const ydoc = ydocRef.current;
-    const quizzes = ensureQuizzesArray();
-    if (!ydoc || !quizzes || totalMergedQuizzes <= 1) return;
+    if (!ydoc || !quizGroup) return;
 
     ydoc.transact(() => {
-      const indicesDesc = quizGroup.quizMaps
-        .map((item) => item.index)
-        .sort((a, b) => b - a);
-      for (const idx of indicesDesc) {
-        if (idx >= 0 && idx < quizzes.length) {
-          quizzes.delete(idx, 1);
+      for (const item of quizGroup.quizMaps) {
+        const questions = item.quizMap.get('questions');
+        if (questions && questions.length > 0) {
+          questions.delete(0, questions.length);
         }
+        item.quizMap.set('deleted', true);
       }
     });
     setSelectedQuizIndex((prev) =>
-      Math.max(0, Math.min(prev, totalMergedQuizzes - 2))
+      Math.max(0, Math.min(prev, Math.max(0, totalMergedQuizzes - 2)))
     );
   };
 
@@ -470,22 +512,29 @@ export default function App() {
         ]
       );
       questions.push([questionMap]);
+      quizGroup.canonicalQuiz.set('deleted', false);
     });
   };
 
+  /**
+   * Soft-delete de Questão com semântica Add-Wins para alternativas concorrentes.
+   */
   const handleRemoveQuestionGroup = (questionGroup) => {
     const ydoc = ydocRef.current;
     if (!ydoc || !questionGroup) return;
 
     ydoc.transact(() => {
-      // Remove em ordem decrescente de índice por Y.Array pai
-      const sortedRefs = [...questionGroup.questionRefs].sort(
-        (a, b) => b.index - a.index
-      );
-      for (const ref of sortedRefs) {
-        const arr = ref.parentQuestionsYArray;
-        if (arr && ref.index >= 0 && ref.index < arr.length) {
-          arr.delete(ref.index, 1);
+      for (const ref of questionGroup.questionRefs) {
+        const alternativas = ref.questionMap.get('alternativas');
+        if (alternativas && alternativas.length > 0) {
+          alternativas.delete(0, alternativas.length);
+        }
+        ref.questionMap.set('deleted', true);
+      }
+      // Garante que remover manualmente uma questão não oculte o quiz pai
+      if (questionGroup.parentQuizGroup) {
+        for (const item of questionGroup.parentQuizGroup.quizMaps) {
+          item.quizMap.set('deleted', false);
         }
       }
     });
@@ -502,10 +551,14 @@ export default function App() {
       const letra = String.fromCharCode(65 + questionGroup.alternativas.length);
       const novaAlt = createAlternativeYMap(`Alternativa ${letra}`, false);
       alternativas.push([novaAlt]);
+      questionGroup.canonicalQuestion.set('deleted', false);
+      if (questionGroup.parentQuizGroup) {
+        questionGroup.parentQuizGroup.canonicalQuiz.set('deleted', false);
+      }
     });
   };
 
-  const handleRemoveAlternativeGroup = (altGroup) => {
+  const handleRemoveAlternativeGroup = (altGroup, questionGroup) => {
     const ydoc = ydocRef.current;
     if (!ydoc || !altGroup) return;
 
@@ -517,6 +570,12 @@ export default function App() {
         const arr = ref.parentAlternativasYArray;
         if (arr && ref.index >= 0 && ref.index < arr.length) {
           arr.delete(ref.index, 1);
+        }
+      }
+      // Garante que remover manualmente uma alternativa não oculte a questão pai
+      if (questionGroup) {
+        for (const ref of questionGroup.questionRefs) {
+          ref.questionMap.set('deleted', false);
         }
       }
     });
@@ -689,18 +748,16 @@ export default function App() {
                     >
                       {titleText.trim() || `Quiz #${idx + 1}`}
                     </button>
-                    {quizzesList.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleRemoveQuizGroup(quizGroup, quizzesList.length)
-                        }
-                        title="Remover Quiz"
-                        className="pr-2.5 pl-1 py-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
-                      >
-                        ×
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleRemoveQuizGroup(quizGroup, quizzesList.length)
+                      }
+                      title="Remover Quiz"
+                      className="pr-2.5 pl-1 py-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                    >
+                      ×
+                    </button>
                   </div>
                 );
               })}
@@ -907,7 +964,10 @@ export default function App() {
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      handleRemoveAlternativeGroup(altGroup)
+                                      handleRemoveAlternativeGroup(
+                                        altGroup,
+                                        questionGroup
+                                      )
                                     }
                                     className="text-slate-400 hover:text-rose-600 px-1.5 py-1 rounded transition-colors cursor-pointer"
                                     title="Remover alternativa"
