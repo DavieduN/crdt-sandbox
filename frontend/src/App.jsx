@@ -127,9 +127,133 @@ function createQuizYMap(
   return quizMap;
 }
 
+/**
+ * Consolida Quizzes, Questões e Alternativas pela sua identidade semântica:
+ * - Quiz -> title
+ * - Questão -> enunciado
+ * - Alternativa -> texto
+ *
+ * Dessa forma, se Alice e Bob criarem/editarem offline o mesmo "Quiz 1"
+ * adicionando perguntas diferentes (Y e Z), ao reconectar tudo é mesclado
+ * em um único "Quiz 1" com todas as perguntas (X, Y e Z) sem perda por LWW.
+ */
+function buildMergedQuizzesView(quizzesYArray) {
+  if (!quizzesYArray) return [];
+
+  const rawQuizzes = quizzesYArray.toArray();
+  const quizGroupsMap = new Map();
+
+  rawQuizzes.forEach((quizMap, rawQuizIdx) => {
+    const titleAttr = quizMap.get('title');
+    const titleStr =
+      titleAttr instanceof Y.Text
+        ? titleAttr.toString()
+        : String(titleAttr || '');
+    const normalizedTitle = titleStr.trim();
+    const quizKey = normalizedTitle
+      ? `title:${normalizedTitle}`
+      : `id:${quizMap.get('id') || rawQuizIdx}`;
+
+    if (!quizGroupsMap.has(quizKey)) {
+      quizGroupsMap.set(quizKey, {
+        key: quizKey,
+        canonicalQuiz: quizMap,
+        quizMaps: [],
+        titleYTexts: [],
+        questionGroupsMap: new Map(),
+      });
+    }
+
+    const qGroup = quizGroupsMap.get(quizKey);
+    qGroup.quizMaps.push({ quizMap, index: rawQuizIdx });
+    if (titleAttr instanceof Y.Text) {
+      qGroup.titleYTexts.push(titleAttr);
+    }
+
+    const questionsYArray = quizMap.get('questions');
+    if (!questionsYArray) return;
+
+    questionsYArray.toArray().forEach((questionMap, rawQuestionIdx) => {
+      const enunciadoYText = questionMap.get('enunciado');
+      const enunciadoStr =
+        enunciadoYText instanceof Y.Text ? enunciadoYText.toString() : '';
+      const normalizedEnunciado = enunciadoStr.trim();
+      const questionKey = normalizedEnunciado
+        ? `enunciado:${normalizedEnunciado}`
+        : `id:${questionMap.get('id') || `${rawQuizIdx}-${rawQuestionIdx}`}`;
+
+      if (!qGroup.questionGroupsMap.has(questionKey)) {
+        qGroup.questionGroupsMap.set(questionKey, {
+          key: questionKey,
+          canonicalQuestion: questionMap,
+          questionRefs: [],
+          enunciadoYTexts: [],
+          altGroupsMap: new Map(),
+        });
+      }
+
+      const questGroup = qGroup.questionGroupsMap.get(questionKey);
+      questGroup.questionRefs.push({
+        parentQuestionsYArray: questionsYArray,
+        questionMap,
+        index: rawQuestionIdx,
+      });
+      if (enunciadoYText instanceof Y.Text) {
+        questGroup.enunciadoYTexts.push(enunciadoYText);
+      }
+
+      const alternativasYArray = questionMap.get('alternativas');
+      if (!alternativasYArray) return;
+
+      alternativasYArray.toArray().forEach((altMap, rawAltIdx) => {
+        const textoYText = altMap.get('texto');
+        const textoStr =
+          textoYText instanceof Y.Text ? textoYText.toString() : '';
+        const normalizedTexto = textoStr.trim();
+        const altKey = normalizedTexto
+          ? `texto:${normalizedTexto}`
+          : `id:${
+              altMap.get('id') ||
+              `${rawQuizIdx}-${rawQuestionIdx}-${rawAltIdx}`
+            }`;
+
+        if (!questGroup.altGroupsMap.has(altKey)) {
+          questGroup.altGroupsMap.set(altKey, {
+            key: altKey,
+            canonicalAlt: altMap,
+            altRefs: [],
+            textoYTexts: [],
+          });
+        }
+
+        const altGroup = questGroup.altGroupsMap.get(altKey);
+        altGroup.altRefs.push({
+          parentAlternativasYArray: alternativasYArray,
+          altMap,
+          index: rawAltIdx,
+        });
+        if (textoYText instanceof Y.Text) {
+          altGroup.textoYTexts.push(textoYText);
+        }
+      });
+    });
+  });
+
+  return Array.from(quizGroupsMap.values()).map((qGroup) => ({
+    ...qGroup,
+    questions: Array.from(qGroup.questionGroupsMap.values()).map(
+      (questGroup) => ({
+        ...questGroup,
+        alternativas: Array.from(questGroup.altGroupsMap.values()),
+      })
+    ),
+  }));
+}
+
 function CollaborativeTextField({
   ydoc,
   ytext,
+  extraYTexts = [],
   placeholder,
   className,
   multiline = false,
@@ -157,7 +281,16 @@ function CollaborativeTextField({
   const handleChange = (e) => {
     const nextVal = e.target.value;
     setValue(nextVal);
-    applyYTextDiff(ydoc, ytext, nextVal);
+    if (!ydoc || !ytext) return;
+
+    ydoc.transact(() => {
+      applyYTextDiff(ydoc, ytext, nextVal);
+      for (const otherYText of extraYTexts) {
+        if (otherYText && otherYText !== ytext) {
+          applyYTextDiff(ydoc, otherYText, nextVal);
+        }
+      }
+    });
   };
 
   if (multiline) {
@@ -291,34 +424,44 @@ export default function App() {
     const quizzes = ensureQuizzesArray();
     if (!ydoc || !quizzes) return;
 
+    const mergedCount = buildMergedQuizzesView(quizzes).length;
     ydoc.transact(() => {
-      const nextNumber = quizzes.length + 1;
-      const newQuiz = createQuizYMap(`Novo Quiz #${nextNumber}`, true);
+      const nextNumber = mergedCount + 1;
+      const newQuiz = createQuizYMap(`Quiz ${nextNumber}`, true);
       quizzes.push([newQuiz]);
     });
-    setSelectedQuizIndex(quizzes.length - 1);
+    setSelectedQuizIndex(mergedCount);
   };
 
-  const handleRemoveQuiz = (quizIdx) => {
+  const handleRemoveQuizGroup = (quizGroup, totalMergedQuizzes) => {
     const ydoc = ydocRef.current;
     const quizzes = ensureQuizzesArray();
-    if (!ydoc || !quizzes || quizzes.length <= 1) return;
+    if (!ydoc || !quizzes || totalMergedQuizzes <= 1) return;
 
     ydoc.transact(() => {
-      quizzes.delete(quizIdx, 1);
+      const indicesDesc = quizGroup.quizMaps
+        .map((item) => item.index)
+        .sort((a, b) => b - a);
+      for (const idx of indicesDesc) {
+        if (idx >= 0 && idx < quizzes.length) {
+          quizzes.delete(idx, 1);
+        }
+      }
     });
-    setSelectedQuizIndex((prev) => Math.max(0, Math.min(prev, quizzes.length - 1)));
+    setSelectedQuizIndex((prev) =>
+      Math.max(0, Math.min(prev, totalMergedQuizzes - 2))
+    );
   };
 
-  const handleAddQuestion = (quizMap) => {
+  const handleAddQuestion = (quizGroup) => {
     const ydoc = ydocRef.current;
-    if (!ydoc || !quizMap) return;
+    if (!ydoc || !quizGroup?.canonicalQuiz) return;
 
-    const questions = quizMap.get('questions');
+    const questions = quizGroup.canonicalQuiz.get('questions');
     if (!questions) return;
 
     ydoc.transact(() => {
-      const nextQuestionNumber = questions.length + 1;
+      const nextQuestionNumber = quizGroup.questions.length + 1;
       const questionMap = createQuestionYMap(
         `Questão ${nextQuestionNumber}: Digite o enunciado aqui...`,
         [
@@ -330,64 +473,78 @@ export default function App() {
     });
   };
 
-  const handleRemoveQuestion = (quizMap, questionIdx) => {
+  const handleRemoveQuestionGroup = (questionGroup) => {
     const ydoc = ydocRef.current;
-    if (!ydoc || !quizMap) return;
-
-    const questions = quizMap.get('questions');
-    if (!questions) return;
+    if (!ydoc || !questionGroup) return;
 
     ydoc.transact(() => {
-      questions.delete(questionIdx, 1);
+      // Remove em ordem decrescente de índice por Y.Array pai
+      const sortedRefs = [...questionGroup.questionRefs].sort(
+        (a, b) => b.index - a.index
+      );
+      for (const ref of sortedRefs) {
+        const arr = ref.parentQuestionsYArray;
+        if (arr && ref.index >= 0 && ref.index < arr.length) {
+          arr.delete(ref.index, 1);
+        }
+      }
     });
   };
 
-  const handleAddAlternative = (questionMap) => {
+  const handleAddAlternative = (questionGroup) => {
     const ydoc = ydocRef.current;
-    if (!ydoc || !questionMap) return;
+    if (!ydoc || !questionGroup?.canonicalQuestion) return;
 
-    const alternativas = questionMap.get('alternativas');
+    const alternativas = questionGroup.canonicalQuestion.get('alternativas');
     if (!alternativas) return;
 
     ydoc.transact(() => {
-      const letra = String.fromCharCode(65 + alternativas.length);
+      const letra = String.fromCharCode(65 + questionGroup.alternativas.length);
       const novaAlt = createAlternativeYMap(`Alternativa ${letra}`, false);
       alternativas.push([novaAlt]);
     });
   };
 
-  const handleRemoveAlternative = (questionMap, altIdx) => {
+  const handleRemoveAlternativeGroup = (altGroup) => {
     const ydoc = ydocRef.current;
-    if (!ydoc || !questionMap) return;
-
-    const alternativas = questionMap.get('alternativas');
-    if (!alternativas) return;
+    if (!ydoc || !altGroup) return;
 
     ydoc.transact(() => {
-      alternativas.delete(altIdx, 1);
+      const sortedRefs = [...altGroup.altRefs].sort(
+        (a, b) => b.index - a.index
+      );
+      for (const ref of sortedRefs) {
+        const arr = ref.parentAlternativasYArray;
+        if (arr && ref.index >= 0 && ref.index < arr.length) {
+          arr.delete(ref.index, 1);
+        }
+      }
     });
   };
 
-  const handleToggleAlternativeCorrect = (altMap) => {
+  const handleToggleAlternativeCorrect = (altGroup) => {
     const ydoc = ydocRef.current;
-    if (!ydoc || !altMap) return;
+    if (!ydoc || !altGroup) return;
+
+    const currentVal = Boolean(altGroup.canonicalAlt.get('isCorrect'));
+    const nextVal = !currentVal;
 
     ydoc.transact(() => {
-      const currentVal = Boolean(altMap.get('isCorrect'));
-      altMap.set('isCorrect', !currentVal);
+      for (const ref of altGroup.altRefs) {
+        ref.altMap.set('isCorrect', nextVal);
+      }
     });
   };
 
   const appState = appStateRef.current;
   const quizzesYArray = appState ? appState.get('quizzes') : null;
-  const quizzesList = quizzesYArray ? quizzesYArray.toArray() : [];
+  const quizzesList = buildMergedQuizzesView(quizzesYArray);
   const activeQuizIndex =
     quizzesList.length > 0
       ? Math.min(selectedQuizIndex, quizzesList.length - 1)
       : 0;
-  const activeQuiz = quizzesList[activeQuizIndex] || null;
-  const questionsYArray = activeQuiz ? activeQuiz.get('questions') : null;
-  const questionsList = questionsYArray ? questionsYArray.toArray() : [];
+  const activeQuizGroup = quizzesList[activeQuizIndex] || null;
+  const questionsList = activeQuizGroup ? activeQuizGroup.questions : [];
 
   const isAlice = INSTANCE_NAME.toLowerCase() === 'alice';
   const isBob = INSTANCE_NAME.toLowerCase() === 'bob';
@@ -508,9 +665,8 @@ export default function App() {
             </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {quizzesList.map((quizMap, idx) => {
-                const quizId = quizMap.get('id') || `quiz-${idx}`;
-                const titleAttr = quizMap.get('title');
+              {quizzesList.map((quizGroup, idx) => {
+                const titleAttr = quizGroup.canonicalQuiz.get('title');
                 const titleText =
                   titleAttr instanceof Y.Text
                     ? titleAttr.toString()
@@ -519,7 +675,7 @@ export default function App() {
 
                 return (
                   <div
-                    key={quizId}
+                    key={quizGroup.key}
                     className={`flex items-center rounded-lg border text-xs font-medium transition-all ${
                       isSelected
                         ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
@@ -536,7 +692,9 @@ export default function App() {
                     {quizzesList.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => handleRemoveQuiz(idx)}
+                        onClick={() =>
+                          handleRemoveQuizGroup(quizGroup, quizzesList.length)
+                        }
                         title="Remover Quiz"
                         className="pr-2.5 pl-1 py-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
                       >
@@ -551,7 +709,7 @@ export default function App() {
         </section>
 
         {/* Quiz Ativo */}
-        {activeQuiz && (
+        {activeQuizGroup && (
           <section className="space-y-6">
             <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 shadow-sm">
               <label
@@ -560,11 +718,12 @@ export default function App() {
               >
                 Título do Quiz
               </label>
-              {activeQuiz.get('title') instanceof Y.Text ? (
+              {activeQuizGroup.canonicalQuiz.get('title') instanceof Y.Text ? (
                 <CollaborativeTextField
                   id="quiz-title-input"
                   ydoc={ydocRef.current}
-                  ytext={activeQuiz.get('title')}
+                  ytext={activeQuizGroup.canonicalQuiz.get('title')}
+                  extraYTexts={activeQuizGroup.titleYTexts}
                   placeholder="Digite o título do quiz..."
                   className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-slate-900 placeholder-slate-400 transition-colors"
                 />
@@ -572,10 +731,12 @@ export default function App() {
                 <input
                   id="quiz-title-input"
                   type="text"
-                  value={String(activeQuiz.get('title') || '')}
+                  value={String(activeQuizGroup.canonicalQuiz.get('title') || '')}
                   onChange={(e) =>
                     ydocRef.current?.transact(() => {
-                      activeQuiz.set('title', e.target.value);
+                      for (const item of activeQuizGroup.quizMaps) {
+                        item.quizMap.set('title', e.target.value);
+                      }
                     })
                   }
                   className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-base font-semibold text-slate-900"
@@ -592,7 +753,7 @@ export default function App() {
                 <button
                   id="add-question-btn"
                   type="button"
-                  onClick={() => handleAddQuestion(activeQuiz)}
+                  onClick={() => handleAddQuestion(activeQuizGroup)}
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors shadow-sm cursor-pointer"
                 >
                   + Adicionar Questão
@@ -606,24 +767,21 @@ export default function App() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleAddQuestion(activeQuiz)}
+                    onClick={() => handleAddQuestion(activeQuizGroup)}
                     className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors cursor-pointer"
                   >
                     Criar Primeira Questão
                   </button>
                 </div>
               ) : (
-                questionsList.map((questionMap, qIdx) => {
-                  const questionId = questionMap.get('id') || `q-${qIdx}`;
-                  const enunciadoYText = questionMap.get('enunciado');
-                  const alternativasYArray = questionMap.get('alternativas');
-                  const alternativasList = alternativasYArray
-                    ? alternativasYArray.toArray()
-                    : [];
+                questionsList.map((questionGroup, qIdx) => {
+                  const enunciadoYText =
+                    questionGroup.canonicalQuestion.get('enunciado');
+                  const alternativasList = questionGroup.alternativas;
 
                   return (
                     <article
-                      key={questionId}
+                      key={questionGroup.key}
                       className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm"
                     >
                       <div className="flex items-start justify-between gap-4">
@@ -635,6 +793,7 @@ export default function App() {
                             id={`question-enunciado-${qIdx}`}
                             ydoc={ydocRef.current}
                             ytext={enunciadoYText}
+                            extraYTexts={questionGroup.enunciadoYTexts}
                             multiline
                             placeholder="Digite o enunciado da questão..."
                             className="w-full rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:outline-none px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 transition-colors resize-y"
@@ -643,7 +802,7 @@ export default function App() {
 
                         <button
                           type="button"
-                          onClick={() => handleRemoveQuestion(activeQuiz, qIdx)}
+                          onClick={() => handleRemoveQuestionGroup(questionGroup)}
                           className="text-xs text-slate-400 hover:text-rose-600 px-2.5 py-1.5 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
                           title="Excluir questão"
                         >
@@ -659,7 +818,7 @@ export default function App() {
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleAddAlternative(questionMap)}
+                            onClick={() => handleAddAlternative(questionGroup)}
                             className="text-xs font-medium text-emerald-600 hover:text-emerald-700 transition-colors cursor-pointer"
                           >
                             + Adicionar Alternativa
@@ -667,14 +826,16 @@ export default function App() {
                         </div>
 
                         <div className="space-y-2">
-                          {alternativasList.map((altMap, altIdx) => {
-                            const altId = altMap.get('id') || `alt-${qIdx}-${altIdx}`;
-                            const textoYText = altMap.get('texto');
-                            const isCorrect = Boolean(altMap.get('isCorrect'));
+                          {alternativasList.map((altGroup, altIdx) => {
+                            const textoYText =
+                              altGroup.canonicalAlt.get('texto');
+                            const isCorrect = Boolean(
+                              altGroup.canonicalAlt.get('isCorrect')
+                            );
 
                             return (
                               <div
-                                key={altId}
+                                key={altGroup.key}
                                 className={`flex items-center gap-3 p-2.5 rounded-lg border transition-colors ${
                                   isCorrect
                                     ? 'bg-emerald-50/70 border-emerald-300'
@@ -695,7 +856,7 @@ export default function App() {
                                     type="checkbox"
                                     checked={isCorrect}
                                     onChange={() =>
-                                      handleToggleAlternativeCorrect(altMap)
+                                      handleToggleAlternativeCorrect(altGroup)
                                     }
                                     className="sr-only peer"
                                   />
@@ -726,6 +887,7 @@ export default function App() {
                                     id={`alt-text-${qIdx}-${altIdx}`}
                                     ydoc={ydocRef.current}
                                     ytext={textoYText}
+                                    extraYTexts={altGroup.textoYTexts}
                                     placeholder={`Alternativa ${altIdx + 1}...`}
                                     className="w-full bg-transparent text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
                                   />
@@ -745,7 +907,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      handleRemoveAlternative(questionMap, altIdx)
+                                      handleRemoveAlternativeGroup(altGroup)
                                     }
                                     className="text-slate-400 hover:text-rose-600 px-1.5 py-1 rounded transition-colors cursor-pointer"
                                     title="Remover alternativa"
